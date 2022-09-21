@@ -1,12 +1,127 @@
 #! /usr/bin/env ruby
 require "pg"
-# CONNECTION = PG.connect(dbname: "expenses")
+require 'io/console'
 
+LINE = "--------------------------------------------------"
 
+# class ExpenseData handles connection to the database as well as
+# database interactions. It basically handles CRUD as well as printing to console.
+class ExpenseData
+  def initialize
+    @connection = PG.connect(dbname: "expenses")
+    setup_schema
+  end
 
-# result.values.each do |row|
-#   puts "#{row[0]} | #{row[1]} |#{row[2].rjust(10)} | #{row[3]}"
-# end
+  def list_expenses
+    abort "There are no expenses" if no_expenses?
+    pg_result = @connection.exec "SELECT id, created_on, amount, memo FROM expenses ORDER BY created_on ASC"
+    display_count(pg_result)
+    display_expenses(pg_result)
+  end
+
+  def add_expense(amount, memo, date)
+    sql = "INSERT INTO expenses (amount, memo, created_on) VALUES($1, $2, $3)"
+    @connection.exec_params(sql, [amount, memo, date])
+    puts amount
+    puts memo
+    puts date
+  end
+
+  def search(term)
+    abort "There are no expenses" if no_expenses?
+    sql = "SELECT id, created_on, amount, memo FROM expenses WHERE memo ILIKE $1"
+    pg_result = @connection.exec_params(sql, ["%#{term}%"])
+    abort "No expenses match search term '#{term}'" if no_expenses?(pg_result)
+    display_count(pg_result)
+    display_expenses(pg_result)
+  end
+
+  def delete_expense(row_number)
+    sql = "SELECT id, created_on, amount, memo FROM expenses WHERE id = $1"
+    pg_result = @connection.exec_params(sql, [row_number])
+    abort "There is no expense with id #{row_number}" unless pg_result.ntuples == 1
+    row = pg_result.values[0]
+    sql = "DELETE FROM expenses WHERE id = $1"
+    @connection.exec_params(sql, [row_number])
+    puts "The following expense has been deleted:"
+
+    puts "#{row[0].ljust(2)} | #{row[1].ljust(10)} | #{row[2].rjust(15)} | #{row[3].rjust(8)}"
+  end
+
+  def delete_all_expenses
+    @connection.exec("DELETE FROM expenses")
+    puts "All expenses have been deleted."
+  end
+  def pg_sum(pg_result = @connection.exec("SELECT sum(amount) FROM expenses"))
+    puts pg_result.values
+    puts pg_result.fields
+    pg_result.each do |tuple|
+      puts tuple['sum']
+    end
+    pg_result.each_row do |row|
+      puts row
+    end
+  end
+  
+  private 
+
+  def setup_schema
+    sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'expenses'"
+    result = @connection.exec <<~SQL
+      SELECT COUNT(*) FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'expenses';
+    SQL
+    if result[0]["count"] == "0"
+      @connection.exec <<~SQL
+        CREATE TABLE expenses (
+          id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          amount numeric(6, 2) NOT NULL,
+          memo text NOT NULL,
+          created_on date NOT NULL
+        );
+      SQL
+    end
+  end
+
+  def display_count(pg_result)
+    count = expense_count(pg_result)
+    if count == 1
+      puts "There is 1 expense."
+    else
+      puts "There are #{count} expenses."
+    end
+  end
+
+  def display_expenses(expenses)
+    expenses.each do |tuple|
+      columns = [
+        tuple["id"].rjust(3),
+        tuple["created_on"].rjust(10),
+        tuple["amount"].rjust(12),
+        tuple["memo"] ]
+      puts columns.join(" | ")
+    end
+    puts LINE
+    puts "Total #{sum(expenses).to_s.rjust(25)}"
+  end
+
+  def sum(pg_result = @connection.exec("SELECT sum(amount) FROM expenses"))
+    (pg_result.field_values('amount').map{|value| value.to_f}).inject(:+).round(2)
+  end
+
+  def expense_count(pg_result = @connection.exec("SELECT * FROM expenses"))
+    pg_result.ntuples
+  end
+
+  def no_expenses?(pg_result = @connection.exec("SELECT * FROM expenses"))
+    pg_result.ntuples == 0
+  end
+
+end
+
+# Class CLI is responsible for parsing and validating
+# the inputs and arguments from the console
+
 class CLI
   def initialize
     @application = ExpenseData.new
@@ -23,12 +138,33 @@ class CLI
         memo = ARGV[1]
         date = ARGV[2] || Date.today
         abort "invalid date" unless validate_date(date)
-        abort "You must provide and amount and memo" unless amount && memo #&& ARGV.length == 3
-        @application.add_expense(amount, memo, date)#.gsub("\'", "\'\'"))
+        abort "You must provide and amount and memo" unless amount && memo
+        @application.add_expense(amount, memo, date)
+      when 'search'
+        term = ARGV[0]
+        abort "Please enter one search term" unless ARGV[0] && !ARGV[1]
+        @application.search(term)
+      when 'delete'
+        row_number = ARGV[0]
+        abort 'Please enter a row number to delete from the database' unless ARGV[0] && !ARGV[1]
+        @application.delete_expense(row_number)
+      when 'clear'
+        abort "command 'clear' deletes ALL expenses. \
+To delete a specific row, use 'delete'" unless !ARGV[0]
+        puts "This will remove all expenses. Are you sure? (y/n)"
+        @application.delete_all_expenses if STDIN.getch.downcase == ('y') 
+      when 'sum'
+        @application.pg_sum
       else
+        
         display_help
     end
   end
+
+  def confirm_clear?
+
+  end
+
   def display_help
     puts <<~HELP
       An expense recording system
@@ -49,35 +185,6 @@ class CLI
     date.to_s =~ /^\d\d\/\d\d\/\d\d\d\d$/ || date.to_s =~ /^\d\d\d\d\-\d\d\-\d\d$/ 
   end
   
-end
-
-class ExpenseData
-  def initialize
-    @connection = PG.connect(dbname: "expenses")
-  end
-  def list_expenses
-    pg_result = @connection.exec "SELECT id, created_on, amount, memo FROM expenses ORDER BY created_on ASC"
-    pg_result.each do |tuple|
-      columns = [
-        tuple["id"].rjust(3),
-        tuple["created_on"].rjust(10),
-        tuple["amount"].rjust(12),
-        tuple["memo"] ]
-      puts columns.join(" | ")
-    end
-  end
-
-  def add_expense(amount, memo, date)
-    # date = Date.today
-    # sql = "INSERT INTO expenses (amount, memo, created_on) VALUES(#{amount}, '#{memo}', '#{date}')"
-    # CONNECTION.exec(sql)
-    sql = "INSERT INTO expenses (amount, memo, created_on) VALUES($1, $2, $3)"
-    @connection.exec_params(sql, [amount, memo, date])
-    puts amount
-    puts memo
-    puts date
-  end
-
 end
 
 
