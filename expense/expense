@@ -1,0 +1,86 @@
+#! /usr/bin/env ruby
+require "pg"
+# CONNECTION = PG.connect(dbname: "expenses")
+
+
+
+# result.values.each do |row|
+#   puts "#{row[0]} | #{row[1]} |#{row[2].rjust(10)} | #{row[3]}"
+# end
+class CLI
+  def initialize
+    @application = ExpenseData.new
+  end
+
+  def run(arguments)
+    command = arguments.shift
+
+    case command
+      when 'list'
+        @application.list_expenses
+      when 'add'
+        amount = ARGV[0]
+        memo = ARGV[1]
+        date = ARGV[2] || Date.today
+        abort "invalid date" unless validate_date(date)
+        abort "You must provide and amount and memo" unless amount && memo #&& ARGV.length == 3
+        @application.add_expense(amount, memo, date)#.gsub("\'", "\'\'"))
+      else
+        display_help
+    end
+  end
+  def display_help
+    puts <<~HELP
+      An expense recording system
+  
+      Commands:
+  
+      add AMOUNT MEMO [DATE] - record a new expense
+      clear - delete all expenses
+      list - list all expenses
+      delete NUMBER - remove expense with id NUMBER
+      search QUERY - list expenses with a matching memo field
+    HELP
+  end
+
+  protected
+
+  def validate_date(date)
+    date.to_s =~ /^\d\d\/\d\d\/\d\d\d\d$/ || date.to_s =~ /^\d\d\d\d\-\d\d\-\d\d$/ 
+  end
+  
+end
+
+class ExpenseData
+  def initialize
+    @connection = PG.connect(dbname: "expenses")
+  end
+  def list_expenses
+    pg_result = @connection.exec "SELECT id, created_on, amount, memo FROM expenses ORDER BY created_on ASC"
+    pg_result.each do |tuple|
+      columns = [
+        tuple["id"].rjust(3),
+        tuple["created_on"].rjust(10),
+        tuple["amount"].rjust(12),
+        tuple["memo"] ]
+      puts columns.join(" | ")
+    end
+  end
+
+  def add_expense(amount, memo, date)
+    # date = Date.today
+    # sql = "INSERT INTO expenses (amount, memo, created_on) VALUES(#{amount}, '#{memo}', '#{date}')"
+    # CONNECTION.exec(sql)
+    sql = "INSERT INTO expenses (amount, memo, created_on) VALUES($1, $2, $3)"
+    @connection.exec_params(sql, [amount, memo, date])
+    puts amount
+    puts memo
+    puts date
+  end
+
+end
+
+
+## Main application code
+
+CLI.new.run(ARGV)
